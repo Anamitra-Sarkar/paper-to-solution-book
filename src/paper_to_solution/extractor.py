@@ -143,10 +143,15 @@ def extract_questions_from_data_url(
     if not content.strip():
         raise ExtractionError("Model returned an empty response")
     result = parse_and_validate(content, model=model, default_page=source_page)
-    # Stamp the actual page (model may omit it)
+    # Stamp the actual page (model may omit it) and record provenance so
+    # downstream consumers can distinguish vision output from text parsing.
     for q in result.questions:
         if not q.source_page:
             q.source_page = source_page
+        if q.extraction_notes:
+            q.extraction_notes += " | Source: vision OCR (Qwen via Groq)"
+        else:
+            q.extraction_notes = "Source: vision OCR (Qwen via Groq)"
     return result
 
 

@@ -18,9 +18,13 @@ def main() -> None:
 
     p_ex = sub.add_parser("extract", help="image(s)/PDF -> extracted questions JSON")
     p_ex.add_argument("inputs", nargs="+", help="image files (.png/.jpg/.webp) or a .pdf")
+    p_ex.add_argument("--mode", default="auto", choices=["auto", "vision", "text"],
+                      help="PDF ingestion strategy (default: auto)")
 
     p_so = sub.add_parser("solve", help="image(s) -> extract -> LangGraph -> answers")
     p_so.add_argument("inputs", nargs="+")
+    p_so.add_argument("--mode", default="auto", choices=["auto", "vision", "text"],
+                      help="PDF ingestion strategy (default: auto)")
 
     p_se = sub.add_parser("serve", help="run demo web UI")
     p_se.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
@@ -31,14 +35,14 @@ def main() -> None:
         from paper_to_solution.pdf_ingest import extract_questions_from_pdf
 
         if len(args.inputs) == 1 and args.inputs[0].lower().endswith(".pdf"):
-            print(_as_json(extract_questions_from_pdf(args.inputs[0])))
+            print(_as_json(extract_questions_from_pdf(args.inputs[0], mode=args.mode)))
         else:
             print(_as_json(extract_questions_from_images(args.inputs)))
     elif args.cmd == "solve":
         from paper_to_solution.pipeline import run_image_to_answers, run_pdf_to_answers
 
         if len(args.inputs) == 1 and args.inputs[0].lower().endswith(".pdf"):
-            out = run_pdf_to_answers(args.inputs[0])
+            out = run_pdf_to_answers(args.inputs[0], mode=args.mode)
         else:
             out = run_image_to_answers(args.inputs)
         print(json.dumps({
