@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-to-solution-book"
+version = "0.1.0"
+description = "Question paper (PDF/image) -> question extraction (Groq Qwen vision) -> LangGraph -> LLM answers"
+requires-python = ">=3.10"
+dependencies = [
+    "groq>=0.30",
+    "langgraph>=1.0",
+    "langchain-groq>=1.0",
+    "pydantic>=2.0",
+    "Pillow>=10.0",
+    "PyMuPDF>=1.23",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+ptsb = "paper_to_solution.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: tests that call the real Groq API (need GROQ_API_KEY)"]
