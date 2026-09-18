@@ -17,8 +17,8 @@ def run_image_to_answers(image_paths: list[str | Path], model: str | None = None
     return {"extraction": extraction, "final_state": final}
 
 
-def run_pdf_to_answers(pdf_path: str | Path) -> dict:
-    extraction = extract_questions_from_pdf(pdf_path)
+def run_pdf_to_answers(pdf_path: str | Path, mode: str = "auto") -> dict:
+    extraction = extract_questions_from_pdf(pdf_path, mode=mode)
     final = run_graph(extraction.questions) if extraction.questions else {
         "questions": [], "solutions": [], "errors": ["No questions extracted; nothing to solve."],
     }
