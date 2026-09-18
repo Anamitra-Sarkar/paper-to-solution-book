@@ -120,6 +120,9 @@ the text parser against the vendored testcase paper
 (`tests/assets/question_paper_455.pdf`, CBSE Class 9 Mathematics, 9 pages,
 from the answer-book `test_papers` set).
 
+To verify any paper from the shared set exactly as in the acceptance test,
+see `docs/TESTING_GUIDE.md` and run `scripts/test_random_paper.py`.
+
 ## Reference results (testcase paper)
 
 - `mode="text"`: 37/37 questions, correct order, no missing marks, MCQ
