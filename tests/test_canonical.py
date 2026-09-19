@@ -128,3 +128,46 @@ def test_tile_merge_dedupes_overlap_and_reassembles_straddlers():
     q5 = merged[1]
     assert "First half" in q5.question_text and "second half" in q5.question_text
     assert "Reassembled" in (q5.extraction_notes or "")
+
+
+def test_tile_merge_option_seen_by_either_tile_survives():
+    """Regression: an MCQ option crossing the tile boundary must not be lost."""
+    from paper_to_solution.extractor import _merge_tile_questions
+
+    top = [_internal(question_number="7", question_text="Four-sided formula?",
+                     options=["(A) 1", "(B) a", "(C) -1"])]
+    bottom = [_internal(question_number="7", question_text="Four-sided formula?",
+                        options=["(C) -1", "(D) 0"])]
+    merged = _merge_tile_questions(top, bottom)
+    assert len(merged) == 1
+    assert merged[0].options == ["(A) 1", "(B) a", "(C) -1", "(D) 0"]
+    # Same text seen twice: kept once, never duplicated.
+    assert merged[0].question_text == "Four-sided formula?"
+    assert "Reassembled" not in (merged[0].extraction_notes or "")
+
+
+def test_tile_merge_substring_keeps_longer_without_duplication():
+    from paper_to_solution.extractor import _merge_tile_questions
+
+    top = [_internal(question_number="9", question_text="Find the value")]
+    bottom = [_internal(question_number="9", question_text="Find the value of x when y is 2")]
+    merged = _merge_tile_questions(top, bottom)
+    assert len(merged) == 1
+    assert merged[0].question_text == "Find the value of x when y is 2"
+
+
+def test_find_split_row_avoids_text_lines():
+    """Regression: tile split must fall in a whitespace gap, never through ink."""
+    from PIL import Image, ImageDraw
+
+    from paper_to_solution.extractor import _find_split_row
+
+    img = Image.new("RGB", (400, 400), "white")
+    d = ImageDraw.Draw(img)
+    ink_bands = [(60, 80), (140, 160), (240, 260), (320, 340)]  # fake text lines
+    for y0, y1 in ink_bands:
+        d.rectangle([20, y0, 380, y1], fill="black")
+    split = _find_split_row(img, search_radius=120)
+    assert 80 <= split <= 320  # inside the search band around mid=200
+    assert all(not (y0 <= split <= y1) for y0, y1 in ink_bands), \
+        f"split row {split} cuts through a text band"
