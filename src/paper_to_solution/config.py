@@ -13,6 +13,13 @@ SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB (Groq rejects larger payloads)
 MAX_IMAGE_DIM = 2048  # downscale longest side beyond this for latency/quality balance
 
+# Vision call budget. Verified 2026-09-19 on the on_demand tier (OTPM 1000):
+# any per-request budget above ~1000 output tokens is rejected outright, so
+# the cap is 1000 and dense pages are handled by tile-splitting in the
+# extractor (two overlapping halves, merged with page-boundary dedup).
+VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1000"))
+VISION_RENDER_DPI = int(os.environ.get("VISION_RENDER_DPI", "100"))
+
 # One image per vision request (verified against installed SDK/API; batching = sequential calls)
 
 

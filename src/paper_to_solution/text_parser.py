@@ -157,7 +157,7 @@ def parse_text_pages(pages: list[tuple[int, str]]) -> list[ExtractedQuestion]:
                 ensure_continuation()
                 if current is None:
                     continue
-                current["text_lines"].append("OR:")
+                current["text_lines"].append("OR")
                 in_or_block = True
                 continue
 
@@ -222,7 +222,7 @@ def _build(current: dict) -> ExtractedQuestion:
     options = current["options"]
     # Split sub-parts separately for the main question and the OR alternative
     # so the two (i)-(iv) sequences never merge into one list.
-    main_text, sep, or_text = text.partition(" OR: ")
+    main_text, sep, or_text = text.partition(" OR ")
     subs = [(label, body) for label, body in _split_subquestions(main_text)]
     if sep and or_text.strip():
         subs += [(f"OR-{label}", body) for label, body in _split_subquestions(or_text)]
@@ -231,6 +231,13 @@ def _build(current: dict) -> ExtractedQuestion:
     if current.get("section"):
         notes.insert(0, current["section"])
     notes.append("Source: digital text layer (no vision used)")
+    has_figure = bool(
+        re.search(
+            r"\b(figure|diagram|graph|plot|shown below|shown above|given figure)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
     return ExtractedQuestion(
         question_number=current["number"],
         question_text=text,
@@ -241,4 +248,6 @@ def _build(current: dict) -> ExtractedQuestion:
         source_page=current["page"],
         confidence=0.99,
         extraction_notes=" | ".join(notes) if notes else None,
+        section=(current.get("section") or "").replace("Section ", "") or None,
+        has_figure=has_figure,
     )

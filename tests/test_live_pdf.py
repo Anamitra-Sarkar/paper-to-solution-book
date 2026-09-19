@@ -35,7 +35,12 @@ def test_live_image_only_pdf_falls_back_to_vision(tmp_path):
 
     res = extract_questions_from_pdf(img_pdf, mode="auto")
     assert len(res.questions) >= 3, f"expected Q4+ from vision, got {len(res.questions)}"
-    numbers = [q.question_number for q in res.questions]
+    numbers = [q.number for q in res.questions]
     assert any(n.strip().lstrip("Q") == "4" for n in numbers), f"numbers: {numbers}"
-    assert all("vision" in (q.extraction_notes or "") for q in res.questions)
+    assert all(q.page == 1 for q in res.questions)
     assert any(q.options for q in res.questions), "MCQ options should come through vision"
+    # Canonical conformance: every vision question re-validates upstream-style.
+    from paper_to_solution.canonical import Question as CanonicalQ
+    for q in res.questions:
+        CanonicalQ.model_validate(q.model_dump())
+        assert q.type in ("mcq", "numerical", "short", "long")

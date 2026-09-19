@@ -34,13 +34,15 @@ document.getElementById('f').onsubmit = async (e) => {
   if (!r.ok) { document.getElementById('out').innerHTML = '<p class="err">Error: ' + (j.detail||r.status) + '</p>'; return; }
   let h = '<h2>Extracted questions (' + j.questions.length + ')</h2>';
   for (const q of j.questions) {
-    h += '<div class="card"><div class="q">Q' + q.question_number + ' <span class="meta">[' +
-      (q.marks ?? '?') + ' marks · ' + q.question_type + ' · page ' + q.source_page +
-      ' · conf ' + q.confidence + ']</span></div><p>' + q.question_text + '</p>';
+    const tags = [(q.marks ?? '?') + ' marks', q.type,
+      'page ' + (q.page ?? '?')].concat(
+      q.section ? ['Section ' + q.section] : [],
+      q.has_figure ? ['figure'] : [],
+      q.choice_group ? ['choice ' + q.choice_group] : []);
+    h += '<div class="card"><div class="q">Q' + q.number + ' <span class="meta">[' +
+      tags.join(' · ') + ']</span></div><p>' + q.text + '</p>';
     if (q.options && q.options.length) h += '<ul>' + q.options.map(o=>'<li>'+o+'</li>').join('') + '</ul>';
-    if (q.subquestions && q.subquestions.length) h += '<ul>' + q.subquestions.map(s=>'<li>(' + s.label + ') ' + s.text + '</li>').join('') + '</ul>';
-    if (q.extraction_notes) h += '<div class="meta">Note: ' + q.extraction_notes + '</div>';
-    const s = (j.solutions||[]).find(x=>x.question_number===q.question_number);
+    const s = (j.solutions||[]).find(x=>x.question_number===q.number);
     if (s) h += '<pre>' + s.answer + '</pre>';
     h += '</div>';
   }
