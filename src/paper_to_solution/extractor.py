@@ -212,45 +212,86 @@ MIN_TILE_HEIGHT = 800
 
 
 def _merge_tile_questions(top: list[ExtractedQuestion], bottom: list[ExtractedQuestion]):
-    """Merge two same-page tile extractions.
+    """Merge two same-page tile extractions without losing boundary content.
 
-    Identical repeats (overlap region) are deduped. A question straddling the
-    split appears partially in both tiles and is reassembled in reading order,
-    flagged in extraction_notes. Anything else stays separate.
+    - Identical repeats (overlap region) are deduped, keeping the union of options.
+    - A question straddling the split appears partially in both tiles and is
+      reassembled in reading order, flagged in extraction_notes.
+    - Options are unioned order-preservingly in every case, so an option seen
+      by either tile always survives. Text is only concatenated when the two
+      fragments are genuinely disjoint; never blindly.
     """
     merged: list[ExtractedQuestion] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, tuple]] = set()
     by_number: dict[str, ExtractedQuestion] = {}
     for q in list(top) + list(bottom):
-        key = (q.question_number.strip(), q.question_text.strip()[:200])
+        key = (q.question_number.strip(), q.question_text.strip()[:200], tuple(q.options))
         if key in seen:
             continue
         seen.add(key)
         prev = by_number.get(q.question_number.strip())
-        if prev is not None and prev.question_text != q.question_text:
-            prev.question_text = f"{prev.question_text} {q.question_text}".strip()
+        if prev is not None:
             for o in q.options:
                 if o not in prev.options:
                     prev.options.append(o)
+            if prev.question_text != q.question_text:
+                if q.question_text in prev.question_text or prev.question_text in q.question_text:
+                    prev.question_text = max(prev.question_text, q.question_text, key=len)
+                else:
+                    prev.question_text = f"{prev.question_text} {q.question_text}".strip()
+                    note = "Reassembled from overlapping tiles."
+                    prev.extraction_notes = (
+                        f"{prev.extraction_notes} | {note}" if prev.extraction_notes else note
+                    )
             if prev.marks is None:
                 prev.marks = q.marks
             prev.confidence = min(prev.confidence, q.confidence)
             if not prev.section and q.section:
                 prev.section = q.section
             prev.has_figure = prev.has_figure or q.has_figure
-            note = "Reassembled from overlapping tiles."
-            prev.extraction_notes = f"{prev.extraction_notes} | {note}" if prev.extraction_notes else note
             continue
         by_number[q.question_number.strip()] = q
         merged.append(q)
     return merged
 
 
+def _find_split_row(image, search_radius: int = 120) -> int:
+    """Row index near the vertical middle that cuts through whitespace, not text.
+
+    Uses the horizontal projection profile: rows darker than near-white count
+    as ink. Returns the quietest row closest to the middle within the search
+    band, so a crop edge never slices a text line (e.g. an MCQ option) in two.
+    Falls back to the exact middle when no whitespace band is found.
+    """
+    import statistics as _stats
+
+    gray = image.convert("L")
+    w, h = gray.size
+    px = gray.load()
+    darkness = []
+    for y in range(h):
+        row = (px[x, y] for x in range(0, w, 4))
+        darkness.append(sum(255 - v for v in row))
+    mid = h // 2
+    lo, hi = max(0, mid - search_radius), min(h - 1, mid + search_radius)
+    band = darkness[lo:hi + 1]
+    if not band:
+        return mid
+    threshold = max(_stats.mean(band) * 0.25, 1.0)
+    best, best_key = mid, None
+    for i, d in enumerate(band):
+        y = lo + i
+        key = (d > threshold, abs(y - mid), -y)
+        if best_key is None or key < best_key:
+            best, best_key = y, key
+    return best
+
+
 def _extract_tiles(image, source_page: int, model: str) -> ExtractionResult:
     w, h = image.size
     overlap = int(h * TILE_OVERLAP)
-    mid = h // 2
-    tiles = [image.crop((0, 0, w, mid + overlap)), image.crop((0, mid - overlap, w, h))]
+    split = _find_split_row(image)
+    tiles = [image.crop((0, 0, w, split + overlap)), image.crop((0, split - overlap, w, h))]
     top_qs, bottom_qs, raw_parts = [], [], []
     for idx, tile in enumerate(tiles):
         tile_result = _extract_internal(_pil_to_data_url(tile), source_page, model)
