@@ -1,9 +1,15 @@
-"""Image -> extracted structured questions via Groq hosted Qwen vision (Anamitra).
+"""Image -> canonical Paper via Groq hosted Qwen vision.
 
-Public surface (also used by Yugal's PDF pipeline and Yashwanth's LangGraph):
-    extract_questions_from_image(path, page_number=1) -> ExtractionResult
-    extract_questions_from_images(paths)              -> ExtractionResult (multi-page)
-    extract_questions_from_data_url(data_url, ...)    -> ExtractionResult (PDF-rendered pages)
+Public surface returns the team-wide canonical schema (canonical.py,
+identical to upstream models/loaders_models.py) so PDF and image ingestion
+converge to one representation:
+
+    IMAGE -> Qwen vision extraction -> canonical Paper -> shared downstream
+
+    extract_questions_from_image(path, page_number=1) -> Paper
+    extract_questions_from_images(paths)              -> Paper (multi-page)
+    extract_questions_from_data_url(data_url, ...)    -> Paper
+    extract_questions_from_pil(image, ...)            -> Paper (PDF-rendered pages)
 
 One vision call per image (no duplicate OCR calls). Retries once on transport
 errors; malformed JSON -> safe recovery path, never fake data.
@@ -18,7 +24,8 @@ from pathlib import Path
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq, RateLimitError
 
 from paper_to_solution import config
-from paper_to_solution.image_io import ImageError, prepare_image_for_model, preprocess_image, to_data_url
+from paper_to_solution.canonical import Paper, to_canonical_paper, to_canonical_question
+from paper_to_solution.image_io import ImageError, preprocess_image, to_data_url
 from paper_to_solution.prompts import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_PROMPT
 from paper_to_solution.schemas import ExtractedQuestion, ExtractionResult, SubQuestion
 
@@ -31,6 +38,11 @@ VALID_QTYPES = {
 
 
 class ExtractionError(RuntimeError):
+    pass
+
+
+class TruncationError(ExtractionError):
+    """Model output hit the token budget; partial data is never returned silently."""
     pass
 
 
@@ -48,7 +60,7 @@ def _strip_fences(text: str) -> str:
 
 
 def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> ExtractionResult:
-    """Parse model JSON -> ExtractionResult. Raises ExtractionError on malformed output."""
+    """Parse model JSON -> internal ExtractionResult. Raises ExtractionError on malformed output."""
     cleaned = _strip_fences(raw_text)
     try:
         data = json.loads(cleaned)
@@ -72,6 +84,9 @@ def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> Extr
         qd.setdefault("source_page", default_page)
         qd.setdefault("confidence", 0.0)
         qd.setdefault("extraction_notes", None)
+        qd.setdefault("section", None)
+        qd.setdefault("has_figure", False)
+        qd.setdefault("choice_group", None)
         if "question_number" not in qd or qd["question_number"] in (None, ""):
             raise ExtractionError(f"questions[{i}] missing required 'question_number'")
         qd["question_number"] = str(qd["question_number"])
@@ -81,6 +96,15 @@ def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> Extr
             qd["options"] = []
         if qd.get("subquestions") is None:
             qd["subquestions"] = []
+        if qd.get("section") is not None:
+            sec = str(qd["section"]).strip().upper().replace("SECTION ", "")
+            qd["section"] = sec or None
+        qd["has_figure"] = bool(qd.get("has_figure", False))
+        if qd.get("choice_group") is not None:
+            qd["choice_group"] = str(qd["choice_group"])
+        elif " OR:" in f" {qd.get('question_text', '')}":
+            # Fallback: internal choice visible in text but not flagged.
+            qd["choice_group"] = qd["question_number"]
         norm_subs = []
         for s in qd["subquestions"]:
             if isinstance(s, dict):
@@ -102,13 +126,8 @@ def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> Extr
     return ExtractionResult(questions=questions, raw_response=raw_text, model=model)
 
 
-def extract_questions_from_data_url(
-    data_url: str,
-    source_page: int = 1,
-    model: str | None = None,
-) -> ExtractionResult:
-    """Single vision call for one already-prepared image data URL."""
-    model = model or config.EXTRACTION_MODEL
+def _extract_internal(data_url: str, source_page: int, model: str) -> ExtractionResult:
+    """Single vision call for one already-prepared image data URL (internal step)."""
     client = _client()
     last_err: Exception | None = None
     for attempt in (1, 2):  # single retry on transport errors only
@@ -116,7 +135,12 @@ def extract_questions_from_data_url(
             resp = client.chat.completions.create(
                 model=model,
                 temperature=0,
-                max_tokens=4096,
+                # Verified 2026-09-19: on the on_demand tier (OTPM limit 1000)
+                # larger per-request budgets are rejected outright, so the
+                # cap pairs with small render sizes (see config). Pages that
+                # still overflow are handled by tile-splitting below.
+                # Truncation is surfaced, never silent.
+                max_tokens=config.VISION_MAX_TOKENS,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -132,19 +156,29 @@ def extract_questions_from_data_url(
             break
         except (RateLimitError, APITimeoutError, APIConnectionError) as e:
             last_err = e
-            log.warning("Groq transient error (attempt %d): %s", attempt, type(e).__name__)
-            time.sleep(2 * attempt)
+            wait = 10 * attempt if isinstance(e, RateLimitError) else 2 * attempt
+            log.warning("Groq transient error (attempt %d): %s; waiting %ss",
+                        attempt, type(e).__name__, wait)
+            time.sleep(wait)
     else:
         raise ExtractionError(f"Groq API transport failure after retry: {last_err}")
     try:
         content = resp.choices[0].message.content or ""
+        finish = resp.choices[0].finish_reason
     except (APIStatusError,) as e:
         raise ExtractionError(f"Groq API error: {e}") from e
     if not content.strip():
         raise ExtractionError("Model returned an empty response")
+    if finish == "length":
+        raise TruncationError(
+            "Model output hit the token budget before all questions were emitted."
+        )
     result = parse_and_validate(content, model=model, default_page=source_page)
-    # Stamp the actual page (model may omit it) and record provenance so
-    # downstream consumers can distinguish vision output from text parsing.
+    return result
+
+
+def _finalize(result: ExtractionResult, source_page: int) -> ExtractionResult:
+    """Stamp page + provenance (applied once per page, after any tile merge)."""
     for q in result.questions:
         if not q.source_page:
             q.source_page = source_page
@@ -155,62 +189,186 @@ def extract_questions_from_data_url(
     return result
 
 
+def _pil_to_data_url(image) -> str:
+    import io as _io
+
+    buf = _io.BytesIO()
+    image.save(buf, format="PNG")
+    return to_data_url(preprocess_image(buf.getvalue()))
+
+
+def _data_url_to_pil(data_url: str):
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image as _Image
+
+    payload = data_url.split(",", 1)[1] if "," in data_url else data_url
+    return _Image.open(_io.BytesIO(_b64.b64decode(payload))).convert("RGB")
+
+
+TILE_OVERLAP = 0.25
+MIN_TILE_HEIGHT = 800
+
+
+def _merge_tile_questions(top: list[ExtractedQuestion], bottom: list[ExtractedQuestion]):
+    """Merge two same-page tile extractions.
+
+    Identical repeats (overlap region) are deduped. A question straddling the
+    split appears partially in both tiles and is reassembled in reading order,
+    flagged in extraction_notes. Anything else stays separate.
+    """
+    merged: list[ExtractedQuestion] = []
+    seen: set[tuple[str, str]] = set()
+    by_number: dict[str, ExtractedQuestion] = {}
+    for q in list(top) + list(bottom):
+        key = (q.question_number.strip(), q.question_text.strip()[:200])
+        if key in seen:
+            continue
+        seen.add(key)
+        prev = by_number.get(q.question_number.strip())
+        if prev is not None and prev.question_text != q.question_text:
+            prev.question_text = f"{prev.question_text} {q.question_text}".strip()
+            for o in q.options:
+                if o not in prev.options:
+                    prev.options.append(o)
+            if prev.marks is None:
+                prev.marks = q.marks
+            prev.confidence = min(prev.confidence, q.confidence)
+            if not prev.section and q.section:
+                prev.section = q.section
+            prev.has_figure = prev.has_figure or q.has_figure
+            note = "Reassembled from overlapping tiles."
+            prev.extraction_notes = f"{prev.extraction_notes} | {note}" if prev.extraction_notes else note
+            continue
+        by_number[q.question_number.strip()] = q
+        merged.append(q)
+    return merged
+
+
+def _extract_tiles(image, source_page: int, model: str) -> ExtractionResult:
+    w, h = image.size
+    overlap = int(h * TILE_OVERLAP)
+    mid = h // 2
+    tiles = [image.crop((0, 0, w, mid + overlap)), image.crop((0, mid - overlap, w, h))]
+    top_qs, bottom_qs, raw_parts = [], [], []
+    for idx, tile in enumerate(tiles):
+        tile_result = _extract_internal(_pil_to_data_url(tile), source_page, model)
+        raw_parts.append(tile_result.raw_response or "")
+        if idx == 0:
+            top_qs.extend(tile_result.questions)
+        else:
+            bottom_qs.extend(tile_result.questions)
+    merged = _merge_tile_questions(top_qs, bottom_qs)
+    return ExtractionResult(questions=merged, raw_response="\n".join(raw_parts), model=model)
+
+
+def _extract_page(image, source_page: int, model: str) -> ExtractionResult:
+    """Extract one page; tile-split with overlap only if the token budget overflows."""
+    try:
+        return _finalize(_extract_internal(_pil_to_data_url(image), source_page, model), source_page)
+    except TruncationError:
+        if image.size[1] < MIN_TILE_HEIGHT:
+            raise
+        log.info("Page %d overflowed the token budget; retrying as overlapping tiles.", source_page)
+        return _finalize(_extract_tiles(image, source_page, model), source_page)
+
+
+def extract_questions_from_data_url(
+    data_url: str,
+    source_page: int = 1,
+    model: str | None = None,
+) -> Paper:
+    """Single image (as data URL) -> canonical Paper, tiling if the budget overflows."""
+    model = model or config.EXTRACTION_MODEL
+    try:
+        image = _data_url_to_pil(data_url)
+        result = _extract_page(image, source_page, model)
+    except ExtractionError:
+        raise
+    except Exception as e:  # unexpected errors -> clean message, no secrets
+        raise ExtractionError(f"Groq API failure: {type(e).__name__}: {e}") from e
+    return to_canonical_paper(
+        [to_canonical_question(q) for q in result.questions],
+        [data_url.encode("utf-8")],
+    )
+
+
 def extract_questions_from_image(
     path: str | Path,
     page_number: int = 1,
     model: str | None = None,
-) -> ExtractionResult:
-    """image -> structured questions (single page)."""
+) -> Paper:
+    """image -> canonical Paper (single page; tiles itself if dense)."""
+    from paper_to_solution.image_io import load_image_bytes
+
+    from PIL import Image as _Image
+    import io as _io
+
     try:
-        data_url, _meta = prepare_image_for_model(path)
+        raw = load_image_bytes(path)[0]
+        image = _Image.open(_io.BytesIO(raw)).convert("RGB")
     except ImageError:
         raise
     try:
-        result = extract_questions_from_data_url(data_url, source_page=page_number, model=model)
+        result = _extract_page(image, page_number, model or config.EXTRACTION_MODEL)
     except ExtractionError:
         raise
-    except Exception as e:  # Groq SDK errors -> clean actionable message, no secrets
+    except Exception as e:  # unexpected errors -> clean message, no secrets
         raise ExtractionError(f"Groq API failure: {type(e).__name__}: {e}") from e
     for q in result.questions:
         q.source_page = page_number
-    return result
+    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [raw])
 
 
 def extract_questions_from_images(
     paths: list[str | Path],
     model: str | None = None,
-) -> ExtractionResult:
-    """Multi-page: one vision call per page (sequential = no rate-limit spikes).
+) -> Paper:
+    """Multi-page: one vision call per page -> single canonical Paper.
 
-    - Preserves source_page per question.
+    - Preserves page per question.
     - Dedupes exact repeats across page boundaries (same number + same text).
-    - Flags likely continuations via extraction_notes (never merges silently).
+    - Flags likely continuations via logged notes (never merges silently).
+    - Dense pages tile themselves (see _extract_page).
     """
+    from paper_to_solution.image_io import load_image_bytes
+
+    from PIL import Image as _Image
+    import io as _io
+
     model = model or config.EXTRACTION_MODEL
     merged: list[ExtractedQuestion] = []
     seen: set[tuple[str, str]] = set()
-    raw_parts: list[str] = []
+    sources: list[bytes] = []
     for idx, p in enumerate(paths, start=1):
-        result = extract_questions_from_image(p, page_number=idx, model=model)
-        raw_parts.append(result.raw_response or "")
+        raw = load_image_bytes(p)[0]
+        sources.append(raw)
+        image = _Image.open(_io.BytesIO(raw)).convert("RGB")
+        result = _extract_page(image, idx, model)
         for q in result.questions:
+            q.source_page = idx
             key = (q.question_number.strip(), q.question_text.strip()[:200])
             if key in seen:
                 continue  # exact duplicate across a page boundary
             seen.add(key)
-            # Continuation hint: same question number already seen with different text
             if any(m.question_number == q.question_number and m.question_text != q.question_text for m in merged):
-                note = f"Possibly continues '{q.question_number}' from page {idx - 1}; kept as separate entry."
-                q.extraction_notes = f"{q.extraction_notes} | {note}" if q.extraction_notes else note
+                log.info(
+                    "Q%s on page %d possibly continues from previous page; kept separate.",
+                    q.question_number, idx,
+                )
             merged.append(q)
-    return ExtractionResult(questions=merged, raw_response="\n".join(raw_parts), model=model)
+    return to_canonical_paper([to_canonical_question(q) for q in merged], sources)
 
 
-def extract_questions_from_pil(image, source_page: int = 1, model: str | None = None) -> ExtractionResult:
-    """Entry point for PDF-rendered pages (Yugal): pass a PIL image directly."""
+def extract_questions_from_pil(image, source_page: int = 1, model: str | None = None) -> Paper:
+    """Entry point for PDF-rendered pages: pass a PIL image directly -> canonical Paper."""
     import io as _io
 
     buf = _io.BytesIO()
     image.save(buf, format="PNG")
-    data_url = to_data_url(preprocess_image(buf.getvalue()))
-    return extract_questions_from_data_url(data_url, source_page=source_page, model=model)
+    png = buf.getvalue()
+    result = _extract_page(image.convert("RGB"), source_page, model or config.EXTRACTION_MODEL)
+    for q in result.questions:
+        q.source_page = source_page
+    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [png])

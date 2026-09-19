@@ -23,7 +23,7 @@ def test_live_single_clear_image(tmp_path):
     ])
     res = extract_questions_from_image(img)
     assert len(res.questions) >= 1
-    texts = " ".join(q.question_text for q in res.questions)
+    texts = " ".join(q.text for q in res.questions)
     assert "7" in texts or "x" in texts  # sanity: real content extracted
 
 
@@ -50,7 +50,7 @@ def test_live_multipage_source_pages(tmp_path):
     p1 = make_paper_image(tmp_path / "p1.png", ["PAGE ONE", "Q1. First question here? [2 marks]"])
     p2 = make_paper_image(tmp_path / "p2.png", ["PAGE TWO", "Q2. Second question here? [3 marks]"])
     res = extract_questions_from_images([p1, p2])
-    pages = {q.source_page for q in res.questions}
+    pages = {q.page for q in res.questions}
     assert pages == {1, 2}
 
 

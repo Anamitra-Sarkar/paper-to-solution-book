@@ -39,6 +39,10 @@ class ExtractedQuestion(BaseModel):
     source_page: int = 1
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     extraction_notes: str | None = None
+    # Canonical-bound fields (see canonical.py): populated when visible,
+    # otherwise None/False per upstream conventions. Never fabricated.
+    section: str | None = None
+    has_figure: bool = False
 
 
 class ExtractionResult(BaseModel):

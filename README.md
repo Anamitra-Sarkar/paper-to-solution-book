@@ -51,18 +51,31 @@ there is a single vision path regardless of input origin.
 | `answer.py` | Answer generation | `ExtractedQuestion -> SolvedQuestion` via text LLM |
 | `pipeline.py`, `cli.py`, `app.py` | Integration | End-to-end helpers, CLI, demo web UI and JSON API |
 
-## Question schema
+## Question schema (canonical, team-wide)
 
-Every extracted question carries the same fields, regardless of source:
+Both ingestion paths return the same `Paper`/`Question` representation,
+field-for-field identical to the canonical `models/loaders_models.py`
+contract owned by the PDF ingestion component. Downstream code never needs
+to know whether a question came from a PDF or an image.
 
-`question_number · question_text · marks · question_type · options ·
-subquestions · source_page · confidence · extraction_notes`
+Per question: `number · section · text · marks · type · options ·
+has_figure · page · choice_group`, where `type` is one of
+`numerical, mcq, short, long`. Unknown or invisible fields use `null`,
+`false`, or the upstream defaults — values are never invented.
 
-Unknown fields use `null` (or empty lists); values are never invented.
-`question_type` is one of `mcq, short_answer, descriptive, numerical,
-coding, fill_in_the_blank, true_false, unknown`. `extraction_notes` always
-records provenance (`Source: digital text layer ...` or
-`Source: vision OCR ...`) plus chapter/section tags when available.
+The vision/text classifiers use a finer internal vocabulary that is mapped
+at the boundary (documented in `canonical.py`):
+
+| internal | canonical |
+|---|---|
+| mcq | mcq |
+| numerical | numerical |
+| short_answer, fill_in_the_blank, true_false, unknown | short |
+| descriptive, coding | long |
+
+The full wording — including sub-parts and OR alternatives — always remains
+in `text`; questions offering an internal choice carry
+`choice_group` set to their number, matching PDF ingestion behavior.
 
 ## PDF ingestion modes
 
@@ -134,6 +147,15 @@ see `docs/TESTING_GUIDE.md` and run `scripts/test_random_paper.py`.
   and subscript styling may be simplified (`sₙ` -> `s_n`); illegible input
   can still yield overconfident output, so `confidence` should not be the
   sole quality signal for poor scans.
+- Platform limit: the Groq `on_demand` tier enforces OTPM 1000 and rejects
+  oversized single vision requests. Rendered PDF pages are rasterized at
+  100dpi (`VISION_RENDER_DPI`) under a 1000-token output budget
+  (`VISION_MAX_TOKENS`, both overridable via environment). A page that
+  still overflows is automatically retried as two overlapping tiles whose
+  extractions are merged with overlap-dedup and straddler reassembly.
+  Budget overruns that cannot be tiled fail loudly instead of truncating
+  silently. The free tier also caps daily tokens (TPD 200000); sustained
+  bursts may need to wait for the quota window.
 
 ## Demo checklist
 

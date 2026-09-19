@@ -45,13 +45,13 @@ def download(name: str, dest: Path) -> Path:
 
 def pick_sample(questions, n: int):
     """Spread the sample across question types (MCQs first, then the rest)."""
-    mcqs = [q for q in questions if q.question_type == "mcq"]
-    rest = [q for q in questions if q.question_type != "mcq"]
+    mcqs = [q for q in questions if q.type == "mcq"]
+    rest = [q for q in questions if q.type != "mcq"]
     ordered = mcqs[:2] + rest + mcqs[2:]
     seen, out = set(), []
     for q in ordered:
-        if q.question_number not in seen:
-            seen.add(q.question_number)
+        if q.number not in seen:
+            seen.add(q.number)
             out.append(q)
         if len(out) == n:
             break
@@ -95,18 +95,18 @@ def main() -> int:
     failures = []
     if not qs:
         failures.append("no questions extracted at all")
-    numbers = [q.question_number for q in qs]
+    numbers = [q.number for q in qs]
     expected = [str(i) for i in range(1, len(qs) + 1)]
     if numbers != expected:
         failures.append(f"numbering not contiguous 1..{len(qs)}: {numbers}")
-    missing_marks = [q.question_number for q in qs if q.marks is None]
+    missing_marks = [q.number for q in qs if q.marks is None]
     if missing_marks:
         failures.append(f"missing marks: {missing_marks}")
     print(f"Numbering: {'OK (1..%d contiguous)' % len(qs) if numbers == expected else 'CHECK ' + str(numbers)}")
     print(f"Marks: {'OK (all present)' if not missing_marks else 'MISSING ' + str(missing_marks)}")
-    print(f"Pages: {sorted({q.source_page for q in qs})}")
-    print(f"Types: {dict(Counter(q.question_type for q in qs))}")
-    mcq_no_opts = [q.question_number for q in qs if q.question_type == "mcq" and not q.options]
+    print(f"Pages: {sorted({q.page for q in qs})}")
+    print(f"Types: {dict(Counter(q.type for q in qs))}")
+    mcq_no_opts = [q.number for q in qs if q.type == "mcq" and not q.options]
     if mcq_no_opts:
         failures.append(f"MCQs without options: {mcq_no_opts}")
     print(f"MCQ options: {'OK' if not mcq_no_opts else 'MISSING for ' + str(mcq_no_opts)}")
@@ -126,16 +126,16 @@ def main() -> int:
             from paper_to_solution.graph import run_graph
 
             sample = pick_sample(qs, args.sample)
-            print(f"\n### Answers (sample {[q.question_number for q in sample]})")
+            print(f"\n### Answers (sample {[q.number for q in sample]})")
             final = run_graph(sample)
             solved, errors = final["solutions"], final["errors"]
             by_no = {s["question_number"]: s for s in solved}
             for q in sample:
-                print(f"\n----- Q{q.question_number} [{q.marks} marks, {q.question_type}] -----")
-                print(q.question_text[:600])
+                print(f"\n----- Q{q.number} [{q.marks} marks, {q.type}] -----")
+                print(q.text[:600])
                 if q.options:
                     print("Options: " + " | ".join(q.options))
-                s = by_no.get(q.question_number)
+                s = by_no.get(q.number)
                 print("ANSWER:" if s else "NO ANSWER:")
                 print((s["answer"] if s else "")[:1500])
             if errors:

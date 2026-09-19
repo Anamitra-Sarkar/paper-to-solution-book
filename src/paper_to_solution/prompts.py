@@ -16,10 +16,13 @@ Rules:
 11. If text is genuinely unreadable, keep question_text as what you can read and report the uncertainty explicitly via a low confidence value and extraction_notes (e.g. "bottom line partially illegible"). Never hallucinate the unreadable part.
 12. Handle English, Hindi, Bengali, and mixed-language papers; preserve the original script.
 13. Classify question_type as one of: mcq, short_answer, descriptive, numerical, coding, fill_in_the_blank, true_false, unknown. Use unknown when uncertain.
-14. Return ONLY the requested JSON object, no markdown fences, no commentary.
+14. If a section header (e.g. "Section A") is visible for the question, record it in section; otherwise use null.
+15. Set has_figure to true only when a diagram, figure, graph or plot belongs to the question; otherwise false.
+16. If the question offers an internal choice (an "OR" alternative), set choice_group to the question number; otherwise use null.
+17. Return ONLY the requested JSON object, no markdown fences, no commentary.
 
 Required JSON shape:
-{"questions": [{"question_number": "1", "question_text": "...", "marks": 5, "question_type": "descriptive", "options": [], "subquestions": [{"label": "a", "text": "...", "marks": null}], "source_page": 1, "confidence": 0.96, "extraction_notes": null}]}
+{"questions": [{"question_number": "1", "question_text": "...", "marks": 5, "question_type": "descriptive", "options": [], "subquestions": [{"label": "a", "text": "...", "marks": null}], "source_page": 1, "confidence": 0.96, "extraction_notes": null, "section": null, "has_figure": false, "choice_group": null}]}
 """
 
 EXTRACTION_USER_PROMPT = (
