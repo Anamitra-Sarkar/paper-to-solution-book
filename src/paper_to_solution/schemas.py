@@ -49,6 +49,9 @@ class ExtractionResult(BaseModel):
     questions: list[ExtractedQuestion] = Field(default_factory=list)
     raw_response: str | None = Field(default=None, description="Raw model text, kept for debugging")
     model: str = ""
+    # Paper header metadata from the vision response (subject/class/board),
+    # threaded into canonical Paper assembly. Empty when not visible.
+    metadata: dict = Field(default_factory=dict)
 
 
 class SolvedQuestion(BaseModel):

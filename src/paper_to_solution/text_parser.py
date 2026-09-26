@@ -90,6 +90,31 @@ def _split_subquestions(text: str) -> list[tuple[str, str]]:
     return subs if len(subs) >= 2 else []
 
 
+def extract_paper_metadata(pages: list[tuple[int, str]]) -> dict:
+    """Paper header metadata (subject/class/board) from the digital text layer.
+
+    Reads the same header lines the question parser skips, so PDF ingestion
+    produces the same metadata fields as image ingestion. Null-tolerant:
+    anything not found stays absent (canonical Paper uses None).
+    """
+    meta: dict = {}
+    for _, raw_text in pages:
+        for raw_line in raw_text.splitlines():
+            line = raw_line.strip()
+            m = re.search(r"Subject:\s*([^|]+)", line)
+            if m and "subject" not in meta:
+                meta["subject"] = m.group(1).strip() or None
+            m = re.search(r"Class:\s*([^|]+)", line)
+            if m and "class" not in meta:
+                meta["class"] = m.group(1).strip() or None
+            m = re.search(r"\|\s*([A-Z]{2,10})\s*$", line)
+            if m and "board" not in meta:
+                meta["board"] = m.group(1).strip()
+        if len(meta) == 3:
+            break
+    return {k: v for k, v in meta.items() if v}
+
+
 def parse_text_pages(pages: list[tuple[int, str]]) -> list[ExtractedQuestion]:
     """Parse (page_number, page_text) pairs into structured questions.
 

@@ -32,7 +32,8 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Canonical models (verbatim copy of upstream loaders_models.py)
+# Canonical models (verbatim copy of upstream loaders_models.py, synced
+# 2026-09-26; upstream added subject/class_name/board after the first sync)
 # ---------------------------------------------------------------------------
 class Question(BaseModel):
     number: str
@@ -50,6 +51,9 @@ class Paper(BaseModel):
     paper_id: str
     fingerprint: str
     status: Literal['parsing', 'solving', 'ready', 'failed']
+    subject: Optional[str] = None
+    class_name: Optional[str] = None
+    board: Optional[str] = None
     questions: List[Question] = Field(default_factory=list)
     total_questions: Optional[int] = None
     total_marks: Optional[int] = None
@@ -131,9 +135,25 @@ def fingerprint_bytes(*blobs: bytes) -> str:
     return h.hexdigest()
 
 
+def _merge_metadata(*metas: dict) -> dict:
+    """First non-null value wins per key (top tile / earlier page preferred)."""
+    merged: dict = {}
+    for meta in metas:
+        for k, v in (meta or {}).items():
+            if v and k not in merged:
+                merged[k] = v
+    return merged
+
+
+def merge_metadata(*metas: dict) -> dict:
+    """Public alias of the first-wins metadata merge."""
+    return _merge_metadata(*metas)
+
+
 def to_canonical_paper(
     questions: list[Question],
     source_bytes: list[bytes],
+    metadata: dict | None = None,
     status: str = "ready",
 ) -> Paper:
     """Assemble a canonical Paper (same paper_id/fingerprint convention as PDF ingestion)."""
@@ -143,6 +163,9 @@ def to_canonical_paper(
         paper_id=f"pap_{fingerprint[:8]}",
         fingerprint=fingerprint,
         status=status,  # type: ignore[arg-type]
+        subject=(metadata or {}).get("subject"),
+        class_name=(metadata or {}).get("class"),
+        board=(metadata or {}).get("board"),
         questions=questions,
         total_questions=len(questions),
         total_marks=sum(q.marks or 0 for q in questions) or None,

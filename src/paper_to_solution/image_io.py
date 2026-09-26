@@ -65,10 +65,14 @@ def load_image_bytes(path: str | Path) -> tuple[bytes, str]:
 
 
 def preprocess_image(raw: bytes) -> bytes:
-    """Lightweight normalization: EXIF orientation, downscale-if-huge, gentle contrast.
+    """Lightweight normalization for scans and phone photos.
 
+    EXIF orientation, downscale-if-huge, gentle contrast, mild sharpening
+    (helps slightly blurred phone photos; harmless on clean scans).
     Never upscales, never binarizes. Returns PNG bytes.
     """
+    from PIL import ImageFilter as _ImageFilter
+
     with Image.open(io.BytesIO(raw)) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
         w, h = im.size
@@ -79,6 +83,7 @@ def preprocess_image(raw: bytes) -> bytes:
         # Gentle contrast lift helps phone photos of papers; harmless on clean scans.
         im = ImageEnhance.Contrast(im).enhance(1.15)
         im = ImageOps.autocontrast(im, cutoff=0.5)
+        im = im.filter(_ImageFilter.UnsharpMask(radius=2, percent=70, threshold=3))
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         return buf.getvalue()

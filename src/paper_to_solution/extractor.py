@@ -24,7 +24,7 @@ from pathlib import Path
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq, RateLimitError
 
 from paper_to_solution import config
-from paper_to_solution.canonical import Paper, to_canonical_paper, to_canonical_question
+from paper_to_solution.canonical import Paper, _merge_metadata, to_canonical_paper, to_canonical_question
 from paper_to_solution.image_io import ImageError, preprocess_image, to_data_url
 from paper_to_solution.prompts import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_PROMPT
 from paper_to_solution.schemas import ExtractedQuestion, ExtractionResult, SubQuestion
@@ -57,6 +57,18 @@ def _strip_fences(text: str) -> str:
         if t.rsplit("```", 1)[0].strip():
             t = t.rsplit("```", 1)[0]
     return t.strip()
+
+
+def _parse_metadata(data: dict) -> dict:
+    """Paper header metadata (subject/class/board); null-tolerant, never fabricated."""
+    raw = data.get("metadata")
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key in ("subject", "class", "board"):
+        val = raw.get(key)
+        out[key] = str(val).strip() or None if val is not None else None
+    return {k: v for k, v in out.items() if v}
 
 
 def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> ExtractionResult:
@@ -123,7 +135,8 @@ def parse_and_validate(raw_text: str, model: str, default_page: int = 1) -> Extr
         except Exception as e:
             raise ExtractionError(f"questions[{i}] failed schema validation: {e}") from e
 
-    return ExtractionResult(questions=questions, raw_response=raw_text, model=model)
+    return ExtractionResult(questions=questions, raw_response=raw_text, model=model,
+                              metadata=_parse_metadata(data))
 
 
 def _extract_internal(data_url: str, source_page: int, model: str) -> ExtractionResult:
@@ -287,21 +300,36 @@ def _find_split_row(image, search_radius: int = 120) -> int:
     return best
 
 
-def _extract_tiles(image, source_page: int, model: str) -> ExtractionResult:
+def _extract_tiles(image, source_page: int, model: str, _depth: int = 0) -> ExtractionResult:
     w, h = image.size
     overlap = int(h * TILE_OVERLAP)
     split = _find_split_row(image)
     tiles = [image.crop((0, 0, w, split + overlap)), image.crop((0, split - overlap, w, h))]
-    top_qs, bottom_qs, raw_parts = [], [], []
-    for idx, tile in enumerate(tiles):
-        tile_result = _extract_internal(_pil_to_data_url(tile), source_page, model)
+    return _extract_tile_list(tiles, source_page, model, _depth)
+
+
+def _extract_tile_list(tiles, source_page: int, model: str, _depth: int) -> ExtractionResult:
+    merged_qs: list[ExtractedQuestion] = []
+    tile_metas: list[dict] = []
+    raw_parts: list[str] = []
+    for tile in tiles:
+        try:
+            tile_result = _extract_internal(_pil_to_data_url(tile), source_page, model)
+        except TruncationError:
+            if _depth >= 1 or tile.size[1] < MIN_TILE_HEIGHT:
+                raise
+            log.info("Tile overflowed; splitting again (depth %d).", _depth + 1)
+            w, h = tile.size
+            overlap = int(h * TILE_OVERLAP)
+            split = _find_split_row(tile)
+            sub = [tile.crop((0, 0, w, split + overlap)),
+                   tile.crop((0, split - overlap, w, h))]
+            tile_result = _extract_tile_list(sub, source_page, model, _depth + 1)
         raw_parts.append(tile_result.raw_response or "")
-        if idx == 0:
-            top_qs.extend(tile_result.questions)
-        else:
-            bottom_qs.extend(tile_result.questions)
-    merged = _merge_tile_questions(top_qs, bottom_qs)
-    return ExtractionResult(questions=merged, raw_response="\n".join(raw_parts), model=model)
+        tile_metas.append(tile_result.metadata)
+        merged_qs = _merge_tile_questions(merged_qs, tile_result.questions)
+    return ExtractionResult(questions=merged_qs, raw_response="\n".join(raw_parts), model=model,
+                            metadata=_merge_metadata(*tile_metas))
 
 
 def _extract_page(image, source_page: int, model: str) -> ExtractionResult:
@@ -332,6 +360,7 @@ def extract_questions_from_data_url(
     return to_canonical_paper(
         [to_canonical_question(q) for q in result.questions],
         [data_url.encode("utf-8")],
+        result.metadata,
     )
 
 
@@ -359,7 +388,8 @@ def extract_questions_from_image(
         raise ExtractionError(f"Groq API failure: {type(e).__name__}: {e}") from e
     for q in result.questions:
         q.source_page = page_number
-    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [raw])
+    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [raw],
+                              result.metadata)
 
 
 def extract_questions_from_images(
@@ -382,11 +412,13 @@ def extract_questions_from_images(
     merged: list[ExtractedQuestion] = []
     seen: set[tuple[str, str]] = set()
     sources: list[bytes] = []
+    metas: list[dict] = []
     for idx, p in enumerate(paths, start=1):
         raw = load_image_bytes(p)[0]
         sources.append(raw)
         image = _Image.open(_io.BytesIO(raw)).convert("RGB")
         result = _extract_page(image, idx, model)
+        metas.append(result.metadata)
         for q in result.questions:
             q.source_page = idx
             key = (q.question_number.strip(), q.question_text.strip()[:200])
@@ -399,7 +431,8 @@ def extract_questions_from_images(
                     q.question_number, idx,
                 )
             merged.append(q)
-    return to_canonical_paper([to_canonical_question(q) for q in merged], sources)
+    return to_canonical_paper([to_canonical_question(q) for q in merged], sources,
+                              _merge_metadata(*metas))
 
 
 def extract_questions_from_pil(image, source_page: int = 1, model: str | None = None) -> Paper:
@@ -412,4 +445,5 @@ def extract_questions_from_pil(image, source_page: int = 1, model: str | None = 
     result = _extract_page(image.convert("RGB"), source_page, model or config.EXTRACTION_MODEL)
     for q in result.questions:
         q.source_page = source_page
-    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [png])
+    return to_canonical_paper([to_canonical_question(q) for q in result.questions], [png],
+                              result.metadata)

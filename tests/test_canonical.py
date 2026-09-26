@@ -29,8 +29,8 @@ def test_vendored_schema_field_names():
         "options", "has_figure", "page", "choice_group",
     }
     assert set(Paper.model_fields) == {
-        "paper_id", "fingerprint", "status", "questions",
-        "total_questions", "total_marks", "sections",
+        "paper_id", "fingerprint", "status", "subject", "class_name", "board",
+        "questions", "total_questions", "total_marks", "sections",
     }
 
 
@@ -116,6 +116,35 @@ def test_malformed_vision_output_still_rejected():
         parse_and_validate('{"questions": [{"question_text": "no number"}]}', model="t")
 
 
+def test_vision_metadata_parsed_and_assembled():
+    raw = ('{"metadata": {"subject": "Science", "class": "Class 9", "board": "CBSE"},'
+           '"questions": [{"question_number": "1", "question_text": "Q?"}]}')
+    res = parse_and_validate(raw, model="t")
+    assert res.metadata == {"subject": "Science", "class": "Class 9", "board": "CBSE"}
+    paper = to_canonical_paper([to_canonical_question(res.questions[0])], [b"x"],
+                               res.metadata)
+    assert (paper.subject, paper.class_name, paper.board) == ("Science", "Class 9", "CBSE")
+
+
+def test_vision_metadata_absent_is_tolerated():
+    res = parse_and_validate('{"questions": [{"question_number": "1", "question_text": "Q?"}]}',
+                             model="t")
+    assert res.metadata == {}
+    paper = to_canonical_paper([to_canonical_question(res.questions[0])], [b"x"],
+                               res.metadata)
+    assert (paper.subject, paper.class_name, paper.board) == (None, None, None)
+
+
+def test_text_header_metadata_captured():
+    from paper_to_solution.text_parser import extract_paper_metadata
+
+    pages = [(1, "Subject: Mathematics Part 1  |  Class: Class 9\n"
+                 "Total Marks: 80  |  Time Allowed: 3h  |  CBSE\n")]
+    assert extract_paper_metadata(pages) == {
+        "subject": "Mathematics Part 1", "class": "Class 9", "board": "CBSE"}
+    assert extract_paper_metadata([(1, "Q1. Something?")]) == {}
+
+
 def test_tile_merge_dedupes_overlap_and_reassembles_straddlers():
     from paper_to_solution.extractor import _merge_tile_questions
 
@@ -171,3 +200,28 @@ def test_find_split_row_avoids_text_lines():
     assert 80 <= split <= 320  # inside the search band around mid=200
     assert all(not (y0 <= split <= y1) for y0, y1 in ink_bands), \
         f"split row {split} cuts through a text band"
+
+
+def test_nested_tiling_recovers_after_tile_truncation(monkeypatch):
+    """A tile that overflows is split again (depth 2 max); results merge."""
+    from PIL import Image
+
+    import paper_to_solution.extractor as ex
+
+    calls = []
+
+    def fake_internal(data_url, source_page, model):
+        calls.append(source_page)
+        from paper_to_solution.schemas import ExtractionResult
+        if len(calls) <= 2:
+            raise ex.TruncationError("overflow at full page and first tile")
+        n = len(calls)
+        q = _internal(question_number=str(n), question_text=f"Tile question {n}")
+        return ExtractionResult(questions=[q], raw_response="{}", model=model,
+                                metadata={})
+
+    monkeypatch.setattr(ex, "_extract_internal", fake_internal)
+    img = Image.new("RGB", (600, 1600), "white")
+    res = ex._extract_page(img, 1, "test-model")
+    assert len(res.questions) >= 2  # sub-tiles recovered via depth-2 recursion
+    assert len(calls) == 5  # full + tile + 2 sub-tiles + second tile; capped depth

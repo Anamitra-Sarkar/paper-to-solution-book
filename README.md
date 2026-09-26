@@ -135,6 +135,7 @@ from the answer-book `test_papers` set).
 
 To verify any paper from the shared set exactly as in the acceptance test,
 see `docs/TESTING_GUIDE.md` and run `scripts/test_random_paper.py`.
+Week 3 image-ingestion work is documented in `docs/WEEK3_IMAGE_INGESTION.md`.
 
 ## Reference results (testcase paper)
 
