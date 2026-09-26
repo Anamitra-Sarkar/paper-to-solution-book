@@ -8,7 +8,9 @@ shared `test_papers` set. Takes about five minutes, most of it API time.
 ```bash
 git clone https://github.com/Anamitra-Sarkar/paper-to-solution-book
 cd paper-to-solution-book
-pip install -r requirements.txt
+pip install -r requirements.txt   # use a virtualenv first if your machine
+                                  # already has conflicting packages:
+                                  # python3 -m venv .venv && source .venv/bin/activate
 export GROQ_API_KEY="gsk_..."   # only needed for the answer sample
 ```
 
@@ -57,3 +59,26 @@ Vision output may simplify typographic details (combining overlines,
 subscript styling such as `sₙ` rendered as `s_n`). Mathematical notation
 should be proofread before any result is treated as final. Low-quality
 scans deserve manual review regardless of the reported confidence value.
+
+## Bad-phone-photo testing (Week 3)
+
+Build deterministic photo fixtures from a real paper, then grade extraction:
+
+```bash
+python scripts/make_bad_photos.py --pdf tests/assets/question_paper_455.pdf \
+    --pages 2 6 --out test_runs/bad_phones --seed 3
+GROQ_API_KEY=... python scripts/test_phone_photos.py \
+    --manifest test_runs/bad_phones/manifest.json
+```
+
+Grade one photo at a time to stay inside the Groq free-tier rate limits:
+
+```bash
+GROQ_API_KEY=... python scripts/test_phone_photos.py \
+    --manifest test_runs/bad_phones/manifest.json --sample 1
+```
+
+Increase `--sample` one step at a time. Each photo is graded PASS only on
+exact question count plus exact per-question marks against text-layer ground
+truth. Fixtures are synthetic degradations of real pages (declared in the
+manifest), used until real Set A phone photos are available.

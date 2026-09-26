@@ -24,9 +24,14 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 from paper_to_solution import config
-from paper_to_solution.canonical import Paper, to_canonical_paper, to_canonical_question
+from paper_to_solution.canonical import (
+    Paper,
+    merge_metadata,
+    to_canonical_paper,
+    to_canonical_question,
+)
 from paper_to_solution.extractor import extract_questions_from_pil
-from paper_to_solution.text_parser import parse_text_pages
+from paper_to_solution.text_parser import extract_paper_metadata, parse_text_pages
 
 TEXT_FALLBACK_MIN_CHARS = 300
 
@@ -89,16 +94,19 @@ def extract_questions_from_pdf(
 
     if mode == "vision":
         pages = pdf_to_page_images(pdf_path, dpi=config.VISION_RENDER_DPI)
-        merged = []
+        merged, metas = [], []
         for page_no, img in pages:
             result = extract_questions_from_pil(img, source_page=page_no, model=model)
             merged.extend(result.questions)
-        return to_canonical_paper(merged, [pdf_bytes])
+            metas.append({"subject": result.subject, "class": result.class_name,
+                          "board": result.board})
+        return to_canonical_paper(merged, [pdf_bytes], merge_metadata(*metas))
 
     texts = pdf_to_page_texts(pdf_path)
+    text_meta = extract_paper_metadata(texts)
     if mode == "text":
         merged = [to_canonical_question(q) for q in parse_text_pages(texts)]
-        return to_canonical_paper(merged, [pdf_bytes])
+        return to_canonical_paper(merged, [pdf_bytes], text_meta)
 
     # auto: text layer where usable, vision where the page is image-only.
     thin_pages = {n for n, t in texts if len(t.strip()) < TEXT_FALLBACK_MIN_CHARS}
@@ -106,13 +114,18 @@ def extract_questions_from_pdf(
         [(n, t) for n, t in texts if n not in thin_pages])]
     if thin_pages:
         images = dict(pdf_to_page_images(pdf_path, dpi=config.VISION_RENDER_DPI))
-        vision_qs = []
+        vision_qs, vision_metas = [], []
         for n in sorted(thin_pages):
             result = extract_questions_from_pil(images[n], source_page=n, model=model)
             vision_qs.extend(result.questions)
+            vision_metas.append({"subject": result.subject, "class": result.class_name,
+                                 "board": result.board})
         # Merge keeping page order.
         by_page: dict[int, list] = {}
         for q in list(merged) + vision_qs:
             by_page.setdefault(q.page or 0, []).append(q)
         merged = [q for n in sorted(by_page) for q in by_page[n]]
-    return to_canonical_paper(merged, [pdf_bytes])
+    else:
+        vision_metas = []
+    return to_canonical_paper(merged, [pdf_bytes],
+                              merge_metadata(text_meta, *vision_metas))

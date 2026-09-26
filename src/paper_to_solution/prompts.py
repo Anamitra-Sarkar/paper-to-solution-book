@@ -19,10 +19,12 @@ Rules:
 14. If a section header (e.g. "Section A") is visible for the question, record it in section; otherwise use null.
 15. Set has_figure to true only when a diagram, figure, graph or plot belongs to the question; otherwise false.
 16. If the question offers an internal choice (an "OR" alternative), set choice_group to the question number; otherwise use null.
-17. Return ONLY the requested JSON object, no markdown fences, no commentary.
+17. Phone photos may be skewed, rotated, shadowed or slightly blurred. Read carefully anyway; use null and low confidence for what is truly unreadable instead of guessing.
+18. Extract paper header metadata when visible: subject, class, and board. Use null for anything not visible.
+19. Return ONLY the requested JSON object, no markdown fences, no commentary.
 
 Required JSON shape:
-{"questions": [{"question_number": "1", "question_text": "...", "marks": 5, "question_type": "descriptive", "options": [], "subquestions": [{"label": "a", "text": "...", "marks": null}], "source_page": 1, "confidence": 0.96, "extraction_notes": null, "section": null, "has_figure": false, "choice_group": null}]}
+{"metadata": {"subject": null, "class": null, "board": null}, "questions": [{"question_number": "1", "question_text": "...", "marks": 5, "question_type": "descriptive", "options": [], "subquestions": [{"label": "a", "text": "...", "marks": null}], "source_page": 1, "confidence": 0.96, "extraction_notes": null, "section": null, "has_figure": false, "choice_group": null}]}
 """
 
 EXTRACTION_USER_PROMPT = (
